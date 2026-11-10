@@ -211,7 +211,7 @@ input[type=range]{width:100%;accent-color:var(--snap)}
     <p id="cutMsg"></p>
     <label class="f" for="sens" id="sensL" hidden>Cut out less or more<input type="range" id="sens" min="14" max="90" value="38"></label>
     <label class="f" for="cName">Name<input type="text" id="cName" maxlength="20" placeholder="Give it a name" autocomplete="off"></label>
-    <div class="row"><button type="button" class="big" id="makeChar">Make it a character</button><button type="button" class="big alt" id="retake">Try another photo</button></div>
+    <div class="row"><button type="button" class="big" id="makeChar">Make it a character</button><button type="button" class="big alt" id="clearCut" hidden>Start over</button><button type="button" class="big alt" id="retake">Try another photo</button></div>
     <button type="button" class="cancel">Cancel</button>
   </div>
 </div></div>
@@ -499,7 +499,7 @@ let segP = null;
 function loadSeg(){ return segP ||= Promise.race([(async () => { const v = await import(MP + '/vision_bundle.mjs'), fs = await v.FilesetResolver.forVisionTasks(MP + '/wasm'); return await v.InteractiveSegmenter.createFromOptions(fs, { baseOptions: { modelAssetPath: MODEL, delegate: 'CPU' }, outputCategoryMask: true, outputConfidenceMasks: false }); })(), new Promise(r => setTimeout(() => r(null), 25000))]).catch(() => null); }
 function tapCut(seg, src, nx, ny){
   let cut = null;
-  try { seg.segment(src, { keypoint: { x: nx, y: ny } }, res => { const m = res.categoryMask, w = m.width, h = m.height, d = m.getAsUint8Array(), seed = clamp(Math.round(ny * h), 0, h - 1) * w + clamp(Math.round(nx * w), 0, w - 1), tv = d[seed], sel = new Uint8Array(w * h); for (let i = 0; i < sel.length; i++) sel[i] = d[i] === tv ? 1 : 0; cut = maskToCut(src, biggest(sel, w, h, seed), w, h); }); } catch { cut = null; }
+  try { seg.segment(src, { keypoint: { x: nx, y: ny } }, res => { const m = res.categoryMask, w = m.width, h = m.height, d = m.getAsUint8Array(), seed = clamp(Math.round(ny * h), 0, h - 1) * w + clamp(Math.round(nx * w), 0, w - 1), tv = d[seed], sel = new Uint8Array(w * h); let n = 0; for (let i = 0; i < sel.length; i++) if (d[i] === tv) { sel[i] = 1; n++; } if (n < sel.length * 0.6) cut = { m: biggest(sel, w, h, seed), w, h }; }); } catch { cut = null; }
   return cut;
 }
 /* cutout -> rounded 3D body: the silhouette is puffed up like a pillow and the photo is wrapped on front and back */
@@ -536,21 +536,22 @@ function renderMine(){
       $(box).append(b); }
   }
 }
-let srcCv = null, cut = null, seg = null;
+let srcCv = null, cut = null, seg = null, acc = null;
 const stepTo = n => { $('c1').hidden = n !== 1; $('c2').hidden = n !== 2; };
 function showCut(){ const p = $('cutPrev'), c = p.getContext('2d'); p.width = srcCv.width; p.height = srcCv.height; c.drawImage(srcCv, 0, 0); c.fillStyle = 'rgba(12,16,34,.72)'; c.fillRect(0, 0, p.width, p.height); if (cut) c.drawImage(cut.cv, cut.x, cut.y); $('makeChar').disabled = !cut; }
 $('newChar').onclick = () => { if (playing) return; stepTo(1); $('cName').value = ''; $('mChar').hidden = false; loadSeg(); };
 async function gotToy(e){
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try { const u = URL.createObjectURL(f); srcCv = toCanvas(await loadImg(u), 640); URL.revokeObjectURL(u); } catch (err) { return toast(err.message); }
-  cut = null; stepTo(2); showCut(); $('sensL').hidden = true; $('cutT').textContent = 'Getting ready'; $('cutMsg').textContent = 'Loading the cut-out helper. This takes a moment the first time.';
+  cut = null; acc = null; stepTo(2); showCut(); $('sensL').hidden = true; $('clearCut').hidden = true; $('cutT').textContent = 'Getting ready'; $('cutMsg').textContent = 'Loading the cut-out helper. This takes a moment the first time.';
   seg = await loadSeg();
-  if (seg) { $('cutT').textContent = 'Tap your toy'; $('cutMsg').textContent = 'Tap right on the toy in the picture. Tap again if it picks the wrong thing.'; }
+  if (seg) { $('cutT').textContent = 'Tap your toy'; $('cutMsg').textContent = 'Tap the toy in the picture. If a part is missing, tap that part too.'; $('clearCut').hidden = false; }
   else { $('cutT').textContent = 'Is this your toy?'; $('sensL').hidden = false; $('sens').value = 38; cut = autoCut(srcCv, 66); showCut(); $('cutMsg').textContent = cut ? 'Move the slider if bits are missing or extra.' : 'Could not find the toy. Move the slider, or try a photo on a plainer background.'; }
 }
 $('fCam').onchange = gotToy; $('fLib').onchange = gotToy; $('retake').onclick = () => stepTo(1);
 $('sens').oninput = () => { cut = autoCut(srcCv, 104 - +$('sens').value); showCut(); };
-$('cutPrev').addEventListener('pointerdown', e => { if (!seg || !srcCv) return; const r = $('cutPrev').getBoundingClientRect(), c = tapCut(seg, srcCv, clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)); cut = c; showCut(); $('cutMsg').textContent = c ? 'Looks right? Give it a name and make it a character. Or tap again.' : 'That did not pick the toy. Tap right in the middle of it.'; });
+$('cutPrev').addEventListener('pointerdown', e => { if (!seg || !srcCv) return; const r = $('cutPrev').getBoundingClientRect(), c = tapCut(seg, srcCv, clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)); if (c) { if (!acc || acc.w !== c.w || acc.h !== c.h) acc = c; else for (let i = 0; i < c.m.length; i++) if (c.m[i]) acc.m[i] = 1; cut = maskToCut(srcCv, acc.m, acc.w, acc.h); showCut(); } $('cutMsg').textContent = c ? 'Part missing? Tap that part too. When the whole toy is lit up, name it and make it a character.' : 'That picked the background. Tap right on the toy.'; });
+$('clearCut').onclick = () => { acc = null; cut = null; showCut(); $('cutMsg').textContent = 'Tap the toy in the picture.'; };
 $('makeChar').onclick = async () => {
   if (!cut) return; const s = Math.min(1, 150 / Math.max(cut.cv.width, cut.cv.height)), th = mk('canvas', { width: Math.round(cut.cv.width * s), height: Math.round(cut.cv.height * s) }); th.getContext('2d').drawImage(cut.cv, 0, 0, th.width, th.height);
   const ch = { id: uid(), name: $('cName').value.trim() || 'Character ' + (chars.length + 1), cutout: cut.cv.toDataURL('image/png'), thumb: th.toDataURL('image/png') };
